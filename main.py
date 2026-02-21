@@ -7,29 +7,30 @@ from flask import Flask
 from threading import Thread
 from yt_dlp import YoutubeDL
 
-# --- Uptime System (Railway Fix) ---
+# --- Uptime System (Render-এর জন্য ফিক্সড) ---
 app = Flask('')
+
 @app.route('/')
-def home(): return "Bot is Alive and Running on Railway!"
+def home():
+    return "Bot is Alive and Running on Render!"
 
 def run():
-    # Railway-তে পোর্ট অটোমেটিক সেট হয়, তাই os.getenv('PORT') ব্যবহার করা হয়েছে
-    port = int(os.environ.get('PORT', 8080))
+    # Render অটোমেটিক একটি পোর্ট দেয়, সেটা ব্যবহার করা বাধ্যতামূলক
+    port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- Configuration ---
+# --- Configuration (Render Environment Variables থেকে নিবে) ---
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
 MONETAG = os.environ.get('MONETAG_LINK')
-ADMIN_ID = 6311806060 
+ADMIN_ID = 6311806060 # আপনার আইডি
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- ইউজার ট্র্যাকিং (Railway-তে ফাইল রাইটিং পারমিশন ফিক্স) ---
+# --- ইউজার ট্র্যাকিং ফাংশন ---
 def log_user(user_id):
     try:
         if not os.path.exists("users.txt"):
@@ -57,6 +58,7 @@ def welcome(message):
     log_user(message.chat.id)
     bot.send_message(message.chat.id, "👋 **স্বাগতম!**\nলিঙ্ক পাঠান এবং আনলক করে ডাউনলোড করুন।")
 
+# --- প্রো ব্রডকাস্ট ফিচার ---
 @bot.message_handler(commands=['broadcast'])
 def broadcast(message):
     if message.from_user.id == ADMIN_ID:
@@ -75,8 +77,7 @@ def broadcast(message):
                     count += 1
                 except: continue
             bot.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
-    else:
-        bot.send_message(message.chat.id, "❌ আপনি অ্যাডমিন নন।")
+    else: bot.send_message(message.chat.id, "❌ আপনি অ্যাডমিন নন।")
 
 @bot.message_handler(func=lambda message: "http" in message.text)
 def handle_link(message):
@@ -94,29 +95,23 @@ def process_unlock(call):
     
     if int(time.time()) - sent_time < 60:
         remaining = 60 - (int(time.time()) - sent_time)
-        bot.send_message(call.message.chat.id, f"❌ আপনি এখনো ১ মিনিট দেখেননি! আর {remaining} সেকেন্ড অপেক্ষা করুন।")
+        bot.send_message(call.message.chat.id, f"❌ আপনি এখনো ১ মিনিট দেখেননি! আর {remaining} সেকেন্ড বাকি।")
     else:
         status_msg = bot.send_message(call.message.chat.id, "⏳ প্রসেসিং হচ্ছে...")
         try:
             if "tiktok.com" in original_url:
                 video_link = get_tiktok_video(original_url)
-                if video_link:
-                    bot.send_video(call.message.chat.id, video_link, caption="✅ TikTok প্রস্তুত!")
-                else:
-                    bot.send_message(call.message.chat.id, "❌ টিকটক ভিডিও পাওয়া যায়নি।")
+                if video_link: bot.send_video(call.message.chat.id, video_link, caption="✅ TikTok প্রস্তুত!")
+                else: bot.send_message(call.message.chat.id, "❌ ভিডিও পাওয়া যায়নি।")
             else:
                 file_path = f"vid_{call.message.chat.id}.mp4"
-                # Railway ক্রেডিট বাঁচাতে quiet=True এবং মেমোরি ম্যানেজমেন্ট যোগ করা হয়েছে
-                ydl_opts = {'format': 'best', 'outtmpl': file_path, 'quiet': True, 'no_warnings': True}
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([original_url])
-                with open(file_path, 'rb') as video:
-                    bot.send_video(call.message.chat.id, video, caption="✅ ভিডিও প্রস্তুত!")
+                with YoutubeDL({'format': 'best', 'outtmpl': file_path, 'quiet': True}) as ydl: ydl.download([original_url])
+                with open(file_path, 'rb') as video: bot.send_video(call.message.chat.id, video, caption="✅ ভিডিও প্রস্তুত!")
                 if os.path.exists(file_path): os.remove(file_path)
             bot.delete_message(call.message.chat.id, status_msg.message_id)
-        except Exception as e:
-            bot.send_message(call.message.chat.id, "❌ ডাউনলোড এরর! লিঙ্কটি আবার চেক করুন।")
+        except: bot.send_message(call.message.chat.id, "❌ ডাউনলোড এরর!")
 
 if __name__ == "__main__":
     keep_alive()
     bot.polling(none_stop=True)
+            
