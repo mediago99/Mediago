@@ -13,11 +13,18 @@ API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 MONETAG = os.environ.get('MONETAG_LINK')
 CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
 MONGO_URI = os.environ.get('MONGO_URI') 
-ADMIN_ID = 6311806060 # আপনার আইডি
+
+# অ্যাডমিন আইডি সরাসরি এনভায়রনমেন্ট থেকে নিবে, না থাকলে ডিফল্টটি ব্যবহার করবে
+ADMIN_ID_RAW = os.environ.get('ADMIN_ID', '6311806060')
+ADMIN_ID = int(ADMIN_ID_RAW)
 
 # --- Database Setup (MongoDB) ---
-# এটি আপনার ইউজারদের ডাটা চিরস্থায়ীভাবে সেভ রাখবে
-client = pymongo.MongoClient(MONGO_URI)
+# SSL হ্যান্ডশেক এরর এড়াতে tls=True এবং tlsAllowInvalidCertificates যোগ করা হয়েছে
+client = pymongo.MongoClient(
+    MONGO_URI, 
+    tls=True, 
+    tlsAllowInvalidCertificates=True
+)
 db = client['mediago_db']
 users_col = db['users']
 
@@ -61,7 +68,7 @@ def admin_panel(message):
         total = users_col.count_documents({})
         bot.send_message(message.chat.id, f"📊 **অ্যাডমিন প্যানেল**\n\n👥 মোট ইউজার: {total} জন")
     else:
-        bot.send_message(message.chat.id, "❌ আপনি এই বটের অ্যাডমিন নন।")
+        bot.send_message(message.chat.id, f"❌ আপনি এই বটের অ্যাডমিন নন।\nআপনার আইডি: {message.from_user.id}")
 
 @bot.message_handler(func=lambda message: "http" in message.text)
 def handle_link(message):
@@ -118,4 +125,3 @@ if __name__ == "__main__":
     keep_alive()
     print("Bot is starting...")
     bot.polling(none_stop=True)
-        
