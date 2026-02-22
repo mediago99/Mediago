@@ -2,20 +2,32 @@ import telebot
 import os
 import requests
 import time
+import pymongo
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
 from yt_dlp import YoutubeDL
 
-# --- Uptime System (Render-এর জন্য ফিক্সড) ---
+# --- Configuration (Render Environment Variables থেকে আসবে) ---
+API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+MONETAG = os.environ.get('MONETAG_LINK')
+CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
+MONGO_URI = os.environ.get('MONGO_URI') 
+ADMIN_ID = 6311806060 # আপনার আইডি
+
+# --- Database Setup (MongoDB) ---
+# এটি আপনার ইউজারদের ডাটা চিরস্থায়ীভাবে সেভ রাখবে
+client = pymongo.MongoClient(MONGO_URI)
+db = client['mediago_db']
+users_col = db['users']
+
+bot = telebot.TeleBot(API_TOKEN)
 app = Flask('')
 
 @app.route('/')
-def home():
-    return "Bot is Alive and Running on Render!"
+def home(): return "Mediago Bot with MongoDB is Online!"
 
 def run():
-    # Render অটোমেটিক একটি পোর্ট দেয়, সেটা ব্যবহার করা বাধ্যতামূলক
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -23,95 +35,87 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- Configuration (Render Environment Variables থেকে নিবে) ---
-API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-MONETAG = os.environ.get('MONETAG_LINK')
-ADMIN_ID = 6311806060 # আপনার আইডি
+# --- Functions ---
+def is_subscribed(user_id):
+    """ইউজার চ্যানেলে জয়েন আছে কি না চেক করে"""
+    try:
+        member = bot.get_chat_member(CH_ID, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except: return False
 
-bot = telebot.TeleBot(API_TOKEN)
-
-# --- ইউজার ট্র্যাকিং ফাংশন ---
 def log_user(user_id):
-    try:
-        if not os.path.exists("users.txt"):
-            with open("users.txt", "w") as f: f.write("")
-        with open("users.txt", "r") as f:
-            users = f.read().splitlines()
-        if str(user_id) not in users:
-            with open("users.txt", "a") as f: f.write(f"{user_id}\n")
-    except Exception as e:
-        print(f"Logging error: {e}")
+    """নতুন ইউজার হলে ডাটাবেজে সেভ করে"""
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({"user_id": user_id, "join_date": time.time()})
 
-# --- টিকটক ডাউনলোডার (Dual API) ---
-def get_tiktok_video(url):
-    try:
-        res = requests.get(f"https://api.tiklydown.eu.org/api/download?url={url}", timeout=10).json()
-        return res.get('video', {}).get('noWatermark')
-    except:
-        try:
-            res = requests.get(f"https://www.tikwm.com/api/?url={url}", timeout=10).json()
-            return res.get('data', {}).get('play')
-        except: return None
-
+# --- Handlers ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
     log_user(message.chat.id)
-    bot.send_message(message.chat.id, "👋 **স্বাগতম!**\nলিঙ্ক পাঠান এবং আনলক করে ডাউনলোড করুন।")
+    bot.send_message(message.chat.id, "👋 **স্বাগতম!**\nযেকোনো ভিডিও লিঙ্ক পাঠান এবং আনলক করে ডাউনলোড করুন।")
 
-# --- প্রো ব্রডকাস্ট ফিচার ---
-@bot.message_handler(commands=['broadcast'])
-def broadcast(message):
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    """অ্যাডমিন প্যানেল: মোট ইউজার সংখ্যা দেখাবে"""
     if message.from_user.id == ADMIN_ID:
-        msg_text = message.text.replace('/broadcast ', '')
-        if msg_text == '/broadcast' or not msg_text:
-            bot.send_message(message.chat.id, "⚠️ ব্যবহার: `/broadcast আপনার মেসেজ`")
-            return
-        
-        if os.path.exists("users.txt"):
-            with open("users.txt", "r") as f:
-                users = f.read().splitlines()
-            count = 0
-            for user in users:
-                try:
-                    bot.send_message(user, msg_text)
-                    count += 1
-                except: continue
-            bot.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
-    else: bot.send_message(message.chat.id, "❌ আপনি অ্যাডমিন নন।")
+        total = users_col.count_documents({})
+        bot.send_message(message.chat.id, f"📊 **অ্যাডমিন প্যানেল**\n\n👥 মোট ইউজার: {total} জন")
+    else:
+        bot.send_message(message.chat.id, "❌ আপনি এই বটের অ্যাডমিন নন।")
 
 @bot.message_handler(func=lambda message: "http" in message.text)
 def handle_link(message):
     log_user(message.chat.id)
+    
+    # ফোর্স জয়েন চেক
+    if not is_subscribed(message.chat.id):
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/mediago"))
+        bot.send_message(message.chat.id, "❌ **আপনাকে আগে আমাদের চ্যানেলে জয়েন করতে হবে!**\nজয়েন করার পর আবার লিঙ্কটি পাঠান।", reply_markup=markup)
+        return
+
+    # লিঙ্ক লক সিস্টেম
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎬 Watch Ad to Unlock (1 Min)", url=MONETAG))
     markup.add(InlineKeyboardButton("🔓 Unlock Now", callback_data=f"unl_{int(time.time())}_{message.text}"))
-    bot.send_message(message.chat.id, "⚠️ **লিঙ্কটি লক করা আছে!**\nভিডিওটি আনলক করতে অন্তত ১ মিনিট অ্যাডটি দেখুন।", reply_markup=markup, parse_mode="Markdown")
+    
+    bot.send_message(
+        message.chat.id, 
+        "⚠️ **লিঙ্কটি লক করা আছে!**\n\nভিডিওটি আনলক করতে অন্তত ১ মিনিট অ্যাডটি দেখুন। তারপর নিচের আনলক বাটনে ক্লিক করুন।", 
+        reply_markup=markup, 
+        parse_mode="Markdown"
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('unl_'))
 def process_unlock(call):
-    bot.answer_callback_query(call.id)
     data = call.data.split('_')
-    sent_time, original_url = int(data[1]), data[2]
+    sent_time = int(data[1])
+    original_url = data[2]
     
+    # ১ মিনিট সময় পার হয়েছে কি না চেক
     if int(time.time()) - sent_time < 60:
-        remaining = 60 - (int(time.time()) - sent_time)
-        bot.send_message(call.message.chat.id, f"❌ আপনি এখনো ১ মিনিট দেখেননি! আর {remaining} সেকেন্ড বাকি।")
+        bot.answer_callback_query(call.id, "❌ আপনি এখনো ১ মিনিট অ্যাড দেখেননি! অপেক্ষা করুন।", show_alert=True)
     else:
-        status_msg = bot.send_message(call.message.chat.id, "⏳ প্রসেসিং হচ্ছে...")
+        bot.answer_callback_query(call.id, "✅ আনলক সফল! ভিডিও প্রসেস হচ্ছে...")
+        status_msg = bot.send_message(call.message.chat.id, "⏳ ভিডিওটি ডাউনলোড করে আপনাকে পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...")
+        
         try:
-            if "tiktok.com" in original_url:
-                video_link = get_tiktok_video(original_url)
-                if video_link: bot.send_video(call.message.chat.id, video_link, caption="✅ TikTok প্রস্তুত!")
-                else: bot.send_message(call.message.chat.id, "❌ ভিডিও পাওয়া যায়নি।")
-            else:
-                file_path = f"vid_{call.message.chat.id}.mp4"
-                with YoutubeDL({'format': 'best', 'outtmpl': file_path, 'quiet': True}) as ydl: ydl.download([original_url])
-                with open(file_path, 'rb') as video: bot.send_video(call.message.chat.id, video, caption="✅ ভিডিও প্রস্তুত!")
-                if os.path.exists(file_path): os.remove(file_path)
+            file_path = f"vid_{call.message.chat.id}.mp4"
+            # ভিডিও ডাউনলোড লজিক
+            with YoutubeDL({'format': 'best', 'outtmpl': file_path, 'quiet': True}) as ydl:
+                ydl.download([original_url])
+            
+            # ভিডিও পাঠানো
+            with open(file_path, 'rb') as video:
+                bot.send_video(call.message.chat.id, video, caption="✅ আপনার ভিডিও প্রস্তুত!")
+            
+            os.remove(file_path) # মেমোরি খালি করা
             bot.delete_message(call.message.chat.id, status_msg.message_id)
-        except: bot.send_message(call.message.chat.id, "❌ ডাউনলোড এরর!")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ ডাউনলোড করতে সমস্যা হয়েছে। লিঙ্কটি কাজ করছে না বা সাইজ অনেক বড়।")
 
 if __name__ == "__main__":
     keep_alive()
+    print("Bot is starting...")
     bot.polling(none_stop=True)
-            
+        
