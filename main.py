@@ -25,14 +25,14 @@ client = pymongo.MongoClient(
     tls=True, 
     tlsAllowInvalidCertificates=True
 )
-db = client['mediago_db']
+db = client['mediago9_db']
 users_col = db['users']
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask('')
 
 @app.route('/')
-def home(): return "Mediago Bot with MongoDB is Online!"
+def home(): return "Mediago9 Bot with MongoDB is Online!"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -77,7 +77,7 @@ def handle_link(message):
     # ফোর্স জয়েন চেক
     if not is_subscribed(message.chat.id):
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/mediago"))
+        markup.add(InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/mediago9"))
         bot.send_message(message.chat.id, "❌ **আপনাকে আগে আমাদের চ্যানেলে জয়েন করতে হবে!**\nজয়েন করার পর আবার লিঙ্কটি পাঠান।", reply_markup=markup)
         return
 
