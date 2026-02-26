@@ -11,12 +11,11 @@ from yt_dlp import YoutubeDL
 # --- Configuration (Render Environment Variables থেকে আসবে) ---
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 MONETAG = os.environ.get('MONETAG_LINK')
-CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
+CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID', '@mediago9') # ডিফল্ট আপনার নতুন চ্যানেল
 MONGO_URI = os.environ.get('MONGO_URI') 
 
-# অ্যাডমিন আইডি সরাসরি এনভায়রনমেন্ট থেকে নিবে, না থাকলে ডিফল্টটি ব্যবহার করবে
-ADMIN_ID_RAW = os.environ.get('ADMIN_ID', '6311806060')
-ADMIN_ID = int(ADMIN_ID_RAW)
+# অ্যাডমিন আইডি (আপনার আইডিটি এখানে ফিক্সড করে দেওয়া হয়েছে)
+ADMIN_ID = 6311806060
 
 # --- Database Setup (MongoDB) ---
 # SSL হ্যান্ডশেক এরর এড়াতে tls=True এবং tlsAllowInvalidCertificates যোগ করা হয়েছে
@@ -25,14 +24,14 @@ client = pymongo.MongoClient(
     tls=True, 
     tlsAllowInvalidCertificates=True
 )
-db = client['mediago9_db']
+db = client['mediago_db']
 users_col = db['users']
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask('')
 
 @app.route('/')
-def home(): return "Mediago9 Bot with MongoDB is Online!"
+def home(): return "Mediago Bot is Online & Database Connected!"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -77,6 +76,7 @@ def handle_link(message):
     # ফোর্স জয়েন চেক
     if not is_subscribed(message.chat.id):
         markup = InlineKeyboardMarkup()
+        # এখানে আপনার নতুন চ্যানেল লিঙ্ক দেওয়া হয়েছে
         markup.add(InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/mediago9"))
         bot.send_message(message.chat.id, "❌ **আপনাকে আগে আমাদের চ্যানেলে জয়েন করতে হবে!**\nজয়েন করার পর আবার লিঙ্কটি পাঠান।", reply_markup=markup)
         return
@@ -104,24 +104,39 @@ def process_unlock(call):
         bot.answer_callback_query(call.id, "❌ আপনি এখনো ১ মিনিট অ্যাড দেখেননি! অপেক্ষা করুন।", show_alert=True)
     else:
         bot.answer_callback_query(call.id, "✅ আনলক সফল! ভিডিও প্রসেস হচ্ছে...")
-        status_msg = bot.send_message(call.message.chat.id, "⏳ ভিডিওটি ডাউনলোড করে আপনাকে পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...")
+        status_msg = bot.send_message(call.message.chat.id, "⏳ ভিডিওটি প্রসেস হচ্ছে, দয়া করে ১-২ মিনিট অপেক্ষা করুন...")
         
+        file_path = f"vid_{call.message.chat.id}.mp4"
         try:
-            file_path = f"vid_{call.message.chat.id}.mp4"
-            # ভিডিও ডাউনলোড লজিক
-            with YoutubeDL({'format': 'best', 'outtmpl': file_path, 'quiet': True}) as ydl:
+            # প্রো-লেভেল ইউটিউব ও অন্যান্য ভিডিও ডাউনলোড সেটিংস
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best', # অডিওসহ ভিডিও নিশ্চিত করবে (FFmpeg ছাড়া)
+                'outtmpl': file_path,
+                'quiet': True,
+                'no_warnings': True,
+                'max_filesize': 50 * 1024 * 1024 # রেন্ডার সার্ভার সেফটির জন্য ৫০ এমবি লিমিট
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([original_url])
             
             # ভিডিও পাঠানো
             with open(file_path, 'rb') as video:
                 bot.send_video(call.message.chat.id, video, caption="✅ আপনার ভিডিও প্রস্তুত!")
             
-            os.remove(file_path) # মেমোরি খালি করা
+            # মেমোরি খালি করা
+            if os.path.exists(file_path):
+                os.remove(file_path)
             bot.delete_message(call.message.chat.id, status_msg.message_id)
+            
         except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ ডাউনলোড করতে সমস্যা হয়েছে। লিঙ্কটি কাজ করছে না বা সাইজ অনেক বড়।")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            print(f"Error: {e}")
+            bot.send_message(call.message.chat.id, f"❌ ডাউনলোড করতে সমস্যা হয়েছে। লিঙ্কটি কাজ করছে না অথবা ভিডিওটি অনেক বড় (৫০ এমবি+)।")
 
 if __name__ == "__main__":
     keep_alive()
     print("Bot is starting...")
     bot.polling(none_stop=True)
+    
