@@ -7,18 +7,16 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
 from yt_dlp import YoutubeDL
+from bson.objectid import ObjectId # এটি নতুন যোগ করা হয়েছে ID হ্যান্ডেল করার জন্য
 
-# --- Configuration (Render Environment Variables থেকে আসবে) ---
+# --- Configuration ---
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 MONETAG = os.environ.get('MONETAG_LINK')
-CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID', '@mediago9') # ডিফল্ট আপনার নতুন চ্যানেল
+CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID', '@mediago9') 
 MONGO_URI = os.environ.get('MONGO_URI') 
+ADMIN_ID = 6311806060 
 
-# অ্যাডমিন আইডি (আপনার আইডিটি এখানে ফিক্সড করে দেওয়া হয়েছে)
-ADMIN_ID = 6311806060
-
-# --- Database Setup (MongoDB) ---
-# SSL হ্যান্ডশেক এরর এড়াতে tls=True এবং tlsAllowInvalidCertificates যোগ করা হয়েছে
+# --- Database Setup ---
 client = pymongo.MongoClient(
     MONGO_URI, 
     tls=True, 
@@ -26,12 +24,13 @@ client = pymongo.MongoClient(
 )
 db = client['mediago_db']
 users_col = db['users']
+links_col = db['links'] # লিঙ্ক জমা রাখার জন্য নতুন কালেকশন
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask('')
 
 @app.route('/')
-def home(): return "Mediago Bot is Online & Database Connected!"
+def home(): return "Mediago Bot is Online & Error Fixed!"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -43,14 +42,12 @@ def keep_alive():
 
 # --- Functions ---
 def is_subscribed(user_id):
-    """ইউজার চ্যানেলে জয়েন আছে কি না চেক করে"""
     try:
         member = bot.get_chat_member(CH_ID, user_id)
         return member.status in ['member', 'administrator', 'creator']
     except: return False
 
 def log_user(user_id):
-    """নতুন ইউজার হলে ডাটাবেজে সেভ করে"""
     if not users_col.find_one({"user_id": user_id}):
         users_col.insert_one({"user_id": user_id, "join_date": time.time()})
 
@@ -62,29 +59,33 @@ def welcome(message):
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    """অ্যাডমিন প্যানেল: মোট ইউজার সংখ্যা দেখাবে"""
     if message.from_user.id == ADMIN_ID:
         total = users_col.count_documents({})
         bot.send_message(message.chat.id, f"📊 **অ্যাডমিন প্যানেল**\n\n👥 মোট ইউজার: {total} জন")
     else:
-        bot.send_message(message.chat.id, f"❌ আপনি এই বটের অ্যাডমিন নন।\nআপনার আইডি: {message.from_user.id}")
+        bot.send_message(message.chat.id, f"❌ আপনি এই বটের অ্যাডমিন নন।")
 
 @bot.message_handler(func=lambda message: "http" in message.text)
 def handle_link(message):
     log_user(message.chat.id)
     
-    # ফোর্স জয়েন চেক
     if not is_subscribed(message.chat.id):
         markup = InlineKeyboardMarkup()
-        # এখানে আপনার নতুন চ্যানেল লিঙ্ক দেওয়া হয়েছে
         markup.add(InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/mediago9"))
-        bot.send_message(message.chat.id, "❌ **আপনাকে আগে আমাদের চ্যানেলে জয়েন করতে হবে!**\nজয়েন করার পর আবার লিঙ্কটি পাঠান।", reply_markup=markup)
+        bot.send_message(message.chat.id, "❌ **আপনাকে আগে আমাদের চ্যানেলে জয়েন করতে হবে!**", reply_markup=markup)
         return
 
-    # লিঙ্ক লক সিস্টেম
+    # প্রো-সিস্টেম: লিঙ্ক ডাটাবেজে সেভ করা (BUTTON_DATA_INVALID এরর ঠেকাতে)
+    link_data = {
+        "url": message.text,
+        "time": int(time.time())
+    }
+    link_obj = links_col.insert_one(link_data)
+    link_id = str(link_obj.inserted_id)
+
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎬 Watch Ad to Unlock (1 Min)", url=MONETAG))
-    markup.add(InlineKeyboardButton("🔓 Unlock Now", callback_data=f"unl_{int(time.time())}_{message.text}"))
+    markup.add(InlineKeyboardButton("🔓 Unlock Now", callback_data=f"unl_{link_id}"))
     
     bot.send_message(
         message.chat.id, 
@@ -95,48 +96,51 @@ def handle_link(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('unl_'))
 def process_unlock(call):
-    data = call.data.split('_')
-    sent_time = int(data[1])
-    original_url = data[2]
+    link_id = call.data.split('_')[1]
     
-    # ১ মিনিট সময় পার হয়েছে কি না চেক
+    # ডাটাবেজ থেকে লিঙ্ক উদ্ধার করা
+    link_info = links_col.find_one({"_id": ObjectId(link_id)})
+    
+    if not link_info:
+        bot.answer_callback_query(call.id, "❌ লিঙ্কটি পুরনো হয়ে গেছে বা পাওয়া যায়নি।", show_alert=True)
+        return
+
+    sent_time = link_info['time']
+    original_url = link_info['url']
+    
     if int(time.time()) - sent_time < 60:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো ১ মিনিট অ্যাড দেখেননি! অপেক্ষা করুন।", show_alert=True)
     else:
         bot.answer_callback_query(call.id, "✅ আনলক সফল! ভিডিও প্রসেস হচ্ছে...")
-        status_msg = bot.send_message(call.message.chat.id, "⏳ ভিডিওটি প্রসেস হচ্ছে, দয়া করে ১-২ মিনিট অপেক্ষা করুন...")
+        status_msg = bot.send_message(call.message.chat.id, "⏳ ভিডিওটি প্রসেস হচ্ছে, দয়া করে অপেক্ষা করুন...")
         
         file_path = f"vid_{call.message.chat.id}.mp4"
         try:
-            # প্রো-লেভেল ইউটিউব ও অন্যান্য ভিডিও ডাউনলোড সেটিংস
             ydl_opts = {
-                'format': 'best[ext=mp4]/best', # অডিওসহ ভিডিও নিশ্চিত করবে (FFmpeg ছাড়া)
+                'format': 'best[ext=mp4]/best', 
                 'outtmpl': file_path,
                 'quiet': True,
                 'no_warnings': True,
-                'max_filesize': 50 * 1024 * 1024 # রেন্ডার সার্ভার সেফটির জন্য ৫০ এমবি লিমিট
+                'max_filesize': 50 * 1024 * 1024 
             }
 
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([original_url])
             
-            # ভিডিও পাঠানো
             with open(file_path, 'rb') as video:
                 bot.send_video(call.message.chat.id, video, caption="✅ আপনার ভিডিও প্রস্তুত!")
             
-            # মেমোরি খালি করা
             if os.path.exists(file_path):
                 os.remove(file_path)
             bot.delete_message(call.message.chat.id, status_msg.message_id)
+            # ডাউনলোড শেষ হলে ডাটাবেজ থেকে লিঙ্ক মুছে ফেলা (অপশনাল)
+            links_col.delete_one({"_id": ObjectId(link_id)})
             
         except Exception as e:
             if os.path.exists(file_path):
                 os.remove(file_path)
-            print(f"Error: {e}")
-            bot.send_message(call.message.chat.id, f"❌ ডাউনলোড করতে সমস্যা হয়েছে। লিঙ্কটি কাজ করছে না অথবা ভিডিওটি অনেক বড় (৫০ এমবি+)।")
+            bot.send_message(call.message.chat.id, f"❌ ডাউনলোড ব্যর্থ! ইউটিউব ব্লক করেছে অথবা ফাইল সাইজ অনেক বড়।")
 
 if __name__ == "__main__":
     keep_alive()
-    print("Bot is starting...")
     bot.polling(none_stop=True)
-    
