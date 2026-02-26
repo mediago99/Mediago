@@ -116,17 +116,18 @@ def process_unlock(call):
         
         file_path = f"vid_{call.message.chat.id}.mp4"
         try:
-            ydl_opts = {
+                        ydl_opts = {
+                # এটি ইউটিউব থেকে সরাসরি অডিওসহ ভিডিও (Single File) নিয়ে আসবে
                 'format': 'best[ext=mp4]/best', 
                 'outtmpl': file_path,
                 'quiet': True,
                 'no_warnings': True,
+                # বড় ভিডিওর কারণে সার্ভার ক্রাশ হওয়া ঠেকাতে লিমিট
                 'max_filesize': 50 * 1024 * 1024 
             }
-
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([original_url])
-            
+                
             with open(file_path, 'rb') as video:
                 bot.send_video(call.message.chat.id, video, caption="✅ আপনার ভিডিও প্রস্তুত!")
             
