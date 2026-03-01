@@ -1,6 +1,5 @@
 import telebot
 import os
-import requests
 import time
 import pymongo
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,25 +7,26 @@ from flask import Flask
 from threading import Thread
 from yt_dlp import YoutubeDL
 
-# --- Configuration ---
+# ================= CONFIG =================
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 MONETAG = os.environ.get('MONETAG_LINK')
 CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
-MONGO_URI = os.environ.get('MONGO_URI') 
-ADMIN_ID = int(os.environ.get('ADMIN_ID', '6311806060'))
+MONGO_URI = os.environ.get('MONGO_URI')
+ADMIN_ID = int(os.environ.get('ADMIN_ID'))
 
-# লিঙ্ক সংরক্ষণের জন্য (Callback Data Limit এড়াতে)
-pending_links = {}
-
-client = pymongo.MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
+# ================= DB =================
+client = pymongo.MongoClient(MONGO_URI)
 db = client['mediago_db']
 users_col = db['users']
 
+# ================= BOT =================
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask('')
 
+# ============== WEB SERVER (Render) ==============
 @app.route('/')
-def home(): return "Mediago Bot is Active!"
+def home():
+    return "Bot Running Successfully"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -35,69 +35,85 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
-# --- Helpers ---
+# ============== HELPERS ==============
 def is_subscribed(user_id):
     try:
         member = bot.get_chat_member(CH_ID, user_id)
         return member.status in ['member', 'administrator', 'creator']
-    except: return False
+    except:
+        return False
 
-# --- Handlers ---
-@bot.message_handler(func=lambda message: "http" in message.text)
-def handle_link(message):
-    if not is_subscribed(message.chat.id):
-        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📢 Join Channel", url="https://t.me/mediago9"))
-        bot.send_message(message.chat.id, "❌ আগে জয়েন করুন!", reply_markup=markup)
+def add_user(user_id):
+    if not users_col.find_one({"_id": user_id}):
+        users_col.insert_one({"_id": user_id})
+
+# ============== START ==============
+@bot.message_handler(commands=['start'])
+def start(message):
+    add_user(message.from_user.id)
+    total = users_col.count_documents({})
+    bot.send_message(
+        message.chat.id,
+        f"👋 Welcome!\n\n👥 Total Users: {total}\n\nSend YouTube / TikTok / Facebook link."
+    )
+
+# ============== ADMIN STATS ==============
+@bot.message_handler(commands=['stats'])
+def stats(message):
+    if message.from_user.id == ADMIN_ID:
+        total = users_col.count_documents({})
+        bot.send_message(message.chat.id, f"👥 Total Users: {total}")
+
+# ============== LINK HANDLER ==============
+@bot.message_handler(func=lambda m: m.text and "http" in m.text)
+def download_video(message):
+
+    if not is_subscribed(message.from_user.id):
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CH_ID.replace('@','')}")
+        )
+        bot.send_message(message.chat.id, "❌ Please join channel first!", reply_markup=markup)
         return
 
-    # ইউনিক আইডি দিয়ে লিঙ্ক সেভ করা (যাতে বাটন ক্লিক করলে পাওয়া যায়)
-    link_id = str(int(time.time()))
-    pending_links[link_id] = message.text
+    url = message.text.strip()
+    status = bot.send_message(message.chat.id, "⏳ Downloading... Please wait")
 
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🎬 Watch Ad (1 Min)", url=MONETAG))
-    markup.add(InlineKeyboardButton("🔓 Unlock Video", callback_data=f"unl_{link_id}"))
-    
-    bot.send_message(message.chat.id, "⚠️ লিঙ্ক লক করা! ১ মিনিট পর আনলক করুন।", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('unl_'))
-def process_unlock(call):
-    link_id = call.data.split('_')[1]
-    
-    if int(time.time()) - int(link_id) < 60:
-        bot.answer_callback_query(call.id, "❌ ১ মিনিট পূর্ণ হয়নি!", show_alert=True)
-        return
-
-    original_url = pending_links.get(link_id)
-    bot.answer_callback_query(call.id, "✅ আনলক হয়েছে!")
-    status_msg = bot.send_message(call.message.chat.id, "⏳ প্রসেস হচ্ছে...")
+    file_path = f"video_{message.chat.id}.mp4"
 
     try:
-        file_path = f"vid_{call.message.chat.id}.mp4"
-        
-        # ইউটিউব ও টিকটকের জন্য শক্তিশালী সেটিংস
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'bv*[height<=720]+ba/best[height<=720]',
             'outtmpl': file_path,
             'quiet': True,
-            'no_warnings': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/110.0.0.0 Safari/537.36',
-            'referer': 'https://www.tiktok.com/', # টিকটকের জন্য রেফারার জরুরি
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0'
+            }
         }
-        
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([original_url])
-        
-        with open(file_path, 'rb') as video:
-            bot.send_video(call.message.chat.id, video, caption="✅ ডাউনলোড সফল!")
-        
-        os.remove(file_path)
-    except Exception as e:
-        bot.send_message(call.message.chat.id, "❌ ফেইলড! লিঙ্কটি হয়তো প্রাইভেট বা সার্ভার ব্লক করেছে।")
-    finally:
-        bot.delete_message(call.message.chat.id, status_msg.message_id)
 
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as video:
+                bot.send_video(message.chat.id, video, caption="✅ Download Complete")
+            os.remove(file_path)
+        else:
+            bot.send_message(message.chat.id, "❌ File not found.")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ Failed! Server blocked or invalid link.")
+
+    finally:
+        bot.delete_message(message.chat.id, status.message_id)
+
+# ============== MAIN ==============
 if __name__ == "__main__":
     keep_alive()
     bot.polling(none_stop=True)
-        
