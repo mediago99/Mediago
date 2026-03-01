@@ -1,0 +1,28 @@
+name: YT Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "YouTube URL"
+        required: true
+      chat_id:
+        description: "Telegram Chat ID"
+        required: true
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
+
+      - name: Download video
+        run: yt-dlp -f best -o video.mp4 "${{ github.event.inputs.url }}"
+
+      - name: Send to Telegram
+        run: |
+          curl -F chat_id=${{ github.event.inputs.chat_id }} \
+               -F video=@video.mp4 \
+               https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendVideo
