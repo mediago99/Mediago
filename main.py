@@ -1,119 +1,130 @@
-import telebot
 import os
+import telebot
+import yt_dlp
 import time
-import pymongo
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
-from yt_dlp import YoutubeDL
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ================= CONFIG =================
-API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-MONETAG = os.environ.get('MONETAG_LINK')
-CH_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
-MONGO_URI = os.environ.get('MONGO_URI')
-ADMIN_ID = int(os.environ.get('ADMIN_ID'))
+# ===============================
+# CONFIG
+# ===============================
 
-# ================= DB =================
-client = pymongo.MongoClient(MONGO_URI)
-db = client['mediago_db']
-users_col = db['users']
+TOKEN = os.environ.get("BOT_TOKEN")
+MONETAG_LINK = os.environ.get("MONETAG_LINK")
 
-# ================= BOT =================
-bot = telebot.TeleBot(API_TOKEN)
+bot = telebot.TeleBot(TOKEN)
+BOT_USERNAME = bot.get_me().username
+
+users = set()
+pending_links = {}
+
+# ===============================
+# FLASK (Render keep alive)
+# ===============================
+
 app = Flask('')
 
-# ============== WEB SERVER (Render) ==============
 @app.route('/')
 def home():
-    return "Bot Running Successfully"
+    return "Bot is running!"
 
 def run():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     Thread(target=run).start()
 
-# ============== HELPERS ==============
-def is_subscribed(user_id):
-    try:
-        member = bot.get_chat_member(CH_ID, user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except:
-        return False
+# ===============================
+# START
+# ===============================
 
-def add_user(user_id):
-    if not users_col.find_one({"_id": user_id}):
-        users_col.insert_one({"_id": user_id})
-
-# ============== START ==============
 @bot.message_handler(commands=['start'])
 def start(message):
-    add_user(message.from_user.id)
-    total = users_col.count_documents({})
-    bot.send_message(
-        message.chat.id,
-        f"👋 Welcome!\n\n👥 Total Users: {total}\n\nSend YouTube / TikTok / Facebook link."
+    users.add(message.from_user.id)
+
+    bot.reply_to(
+        message,
+        f"""👋 Welcome!
+
+📥 Send video link or mention me
+
+👥 Total Users: {len(users)}
+"""
     )
 
-# ============== ADMIN STATS ==============
-@bot.message_handler(commands=['stats'])
-def stats(message):
-    if message.from_user.id == ADMIN_ID:
-        total = users_col.count_documents({})
-        bot.send_message(message.chat.id, f"👥 Total Users: {total}")
+# ===============================
+# HANDLE LINK
+# ===============================
 
-# ============== LINK HANDLER ==============
-@bot.message_handler(func=lambda m: m.text and "http" in m.text)
-def download_video(message):
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
 
-    if not is_subscribed(message.from_user.id):
-        markup = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CH_ID.replace('@','')}")
-        )
-        bot.send_message(message.chat.id, "❌ Please join channel first!", reply_markup=markup)
+    text = message.text.strip()
+
+    if message.chat.type in ["group", "supergroup"]:
+        if f"@{BOT_USERNAME}" not in text:
+            return
+        text = text.replace(f"@{BOT_USERNAME}", "").strip()
+
+    if not text.startswith("http"):
         return
 
-    url = message.text.strip()
-    status = bot.send_message(message.chat.id, "⏳ Downloading... Please wait")
+    link_id = str(int(time.time()))
+    pending_links[link_id] = text
 
-    file_path = f"video_{message.chat.id}.mp4"
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📢 Watch Ad", url=MONETAG_LINK))
+    markup.add(InlineKeyboardButton("🔓 Unlock Video", callback_data=f"unlock_{link_id}"))
+
+    bot.send_message(
+        message.chat.id,
+        "🔒 Video Locked!\n\nWatch ad and unlock after 60 seconds.",
+        reply_markup=markup
+    )
+
+# ===============================
+# UNLOCK
+# ===============================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("unlock_"))
+def unlock(call):
+
+    link_id = call.data.split("_")[1]
+
+    if int(time.time()) - int(link_id) < 60:
+        bot.answer_callback_query(call.id, "❌ Wait 60 seconds!", show_alert=True)
+        return
+
+    url = pending_links.get(link_id)
+
+    bot.answer_callback_query(call.id, "✅ Unlocked!")
 
     try:
         ydl_opts = {
-            'format': 'bv*[height<=720]+ba/best[height<=720]',
-            'outtmpl': file_path,
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': 'video.%(ext)s',
             'quiet': True,
             'noplaylist': True,
-            'nocheckcertificate': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android']
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0'
-            }
         }
 
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
 
-        if os.path.exists(file_path):
-            with open(file_path, 'rb') as video:
-                bot.send_video(message.chat.id, video, caption="✅ Download Complete")
-            os.remove(file_path)
-        else:
-            bot.send_message(message.chat.id, "❌ File not found.")
+        with open(filename, 'rb') as video:
+            bot.send_video(call.message.chat.id, video)
 
-    except Exception as e:
-        bot.send_message(message.chat.id, "❌ Failed! Server blocked or invalid link.")
+        os.remove(filename)
 
-    finally:
-        bot.delete_message(message.chat.id, status.message_id)
+    except:
+        bot.send_message(call.message.chat.id, "❌ Download failed!")
 
-# ============== MAIN ==============
+# ===============================
+# RUN
+# ===============================
+
 if __name__ == "__main__":
     keep_alive()
-    bot.polling(none_stop=True)
+    bot.infinity_polling()
