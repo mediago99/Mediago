@@ -13,8 +13,17 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 TOKEN = os.environ.get("BOT_TOKEN")
 MONETAG_LINK = os.environ.get("MONETAG_LINK")
 
+if not TOKEN:
+    raise ValueError("BOT_TOKEN is missing in Render Environment!")
+
 bot = telebot.TeleBot(TOKEN)
-BOT_USERNAME = bot.get_me().username
+
+try:
+    BOT_USERNAME = bot.get_me().username
+    print("Bot Started As:", BOT_USERNAME)
+except Exception as e:
+    print("TOKEN ERROR:", e)
+    exit()
 
 users = set()
 pending_links = {}
@@ -61,8 +70,12 @@ def start(message):
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
 
+    if not message.text:
+        return
+
     text = message.text.strip()
 
+    # Group mention handling
     if message.chat.type in ["group", "supergroup"]:
         if f"@{BOT_USERNAME}" not in text:
             return
@@ -75,7 +88,10 @@ def handle_message(message):
     pending_links[link_id] = text
 
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📢 Watch Ad", url=MONETAG_LINK))
+
+    if MONETAG_LINK:
+        markup.add(InlineKeyboardButton("📢 Watch Ad", url=MONETAG_LINK))
+
     markup.add(InlineKeyboardButton("🔓 Unlock Video", callback_data=f"unlock_{link_id}"))
 
     bot.send_message(
@@ -99,7 +115,11 @@ def unlock(call):
 
     url = pending_links.get(link_id)
 
-    bot.answer_callback_query(call.id, "✅ Unlocked!")
+    if not url:
+        bot.answer_callback_query(call.id, "❌ Link expired!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id, "✅ Downloading...")
 
     try:
         ydl_opts = {
@@ -118,7 +138,8 @@ def unlock(call):
 
         os.remove(filename)
 
-    except:
+    except Exception as e:
+        print("Download Error:", e)
         bot.send_message(call.message.chat.id, "❌ Download failed!")
 
 # ===============================
